@@ -11,10 +11,12 @@ Compared to the v2 file format, the v3 file format:
 * Seems to use a simliar header format (see [mktplink2.c])
 * There are two headers in the file, one starting at 0x0 and the other one starting at 0x20200
 * The offsets given in the header starting at 0x0 do **not** point to the kernel anymore
-* When cutting off everything before the second header (0x20200) then you can correct extract the kernel image (LZMA) from the file: ```
-dd if=TD-W8970v1_0.6.0_2.8_up_boot\(130828\)_2013-08-28_10.41.41.bin bs=1 skip=131584 of=removed-datablock1-from-TD-W8970v1_0.6.0_2.8_up_boot.bin
-```
+* When cutting off everything before the second header (0x20200) then you can correct extract the kernel image (LZMA) from the file (see below)
 
+
+Removing everything before the second header
+===========
+    dd if=TD-W8970v1_0.6.0_2.8_up_boot\(130828\)_2013-08-28_10.41.41.bin bs=1 skip=131584 of=removed-datablock1-from-TD-W8970v1_0.6.0_2.8_up_boot.bin
 
 
 References
