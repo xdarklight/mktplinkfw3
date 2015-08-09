@@ -58,7 +58,7 @@ char md5salt_boot[MD5SUM_LEN] = {
 ```
 
 ### RSA Signature
-V3 images are signed, but the content of the first header **is not** covered by the signature. That means, crossflasher **may** can alter the ```hw_id```, ```hw_ver``` and ```add_hw_ver``` fields, recalculate the ```md5sum1``` and use the firmware to crossflash a device. The mentioned fields of the second header are not validated by the the firmware update routine.
+V3 images are signed, but the content of the first header **is not** covered by the signature. That means, crossflasher can alter the ```hw_id```, ```hw_ver``` and ```add_hw_ver``` fields, recalculate the ```md5sum1``` and use the firmware to crossflash a device. The mentioned fields of the second header are not validated by the the firmware update routine.
 
 The file ```lib/libcmm.so``` contains the base64 encoded public key of the pair. The format of the public key is "MS PUBLICKEYBLOB":
 
