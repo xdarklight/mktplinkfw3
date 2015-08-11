@@ -1,7 +1,9 @@
 Firmware tool for TP-Link firmwares with the version 3 header.
 
 ## Format description
-The v3 header is an extension of the v2 header (see [mktplink2.c]). It's not unlikly that devices which expect a v2 header accept the v3 as well.
+The v3 header is an extension of the v2 header (see [mktplink2.c]). Images with header version 3 have a bootloader bundled, similar to v1 header images. Images with header version 3 are RSA signed. The signature is validated by the firmware update routine. The signature **is not** validated by the bootloader on boot.
+
+It's not unlikely that devices which expect a v2 header, accept the v3 header as well, since TP-Link switched from v2 to v3 on already deployed devices like the TD-W8980v1.
 
 ```
 struct fw_header {
@@ -39,13 +41,17 @@ struct fw_header {
 
 The value of the ```version``` field is ```0x03 0x00 0x00 0x00``` and the value of the ```fw_version``` field starts with ```ver. 2.0```.
 
-The firmware **can** contain two headers, in cases a bootloader update is bundled. One starting at 0x00 and the other one starting at 0x020200 (size of the bootloader partition on the device + first header size) prior to the kernel. The first header is for the bootloader update, the second for kernel+rootfs. Every field that isn't mentioned afterwards has the same value for both headers.
+The firmware **must** have two headers, one starting at ```0x00``` and the other one starting at ```0x020200```. All v3 firmware images have a bootloader update bundled. The bootloader is ```0xFF``` padded and starts at ```0x200```, right after the first header. The maximum size of the bootloader is 0x20000 byte (128kb). The kernel+rootfs starts at ```0x20400```, right after the second header.
 
-Only the ```md5sum1``` field of the first header is validated by the firmware update routine. The second header has ```0x00``` as md5sum1.
+Every field that isn't mentioned afterwards has the same value for both headers:
+
+Only the ```md5sum1``` field of the first header is validated by the firmware update routine. The second header has ```0x00``` as ```md5sum1```.
 
 The ```fw_length``` field value is the file size starting from and including the header which contains the value.
 
-The fields ```boot_ofs``` and ```boot_len``` of the first header are evaluated to decide whether the firmware has a bootloader bundled or not. If ```boot_ofs``` and ```boot_len``` are ```0x00 0x00 0x00 0x00```, the payload is kernel+rootfs. The header isn't considered when calculating the ```boot_ofs``` and the field value should normally be ```0x00 0x00 0x00 0x00```.
+The fields ```boot_ofs``` and ```boot_len``` of the first head are evaluated to determine the flash offset to which the firmware should be written. If ```boot_ofs``` and ```boot_len``` are ```0x00 0x00 0x00 0x00```, the **entire image** - including the first header, bootloader and the second header - is written to the flash starting at ```0x20000``` (after bootloader). Otherwise the image is written to the start of the flash and overwrites the bootloader. In case the image is written to the start of the flash, the first header is stripped by the firmware update routine. That means, the ```boot_ofs``` value should normally be ```0x00 0x00 0x00 0x00```.
+
+Maybe not directly related to the v3 header version: The kernel+roots part of the image needs to be ```0xFF``` padded till the size of header+kernel+rootfs+padding matches the size of the firmware mtd partition. The stock firmware update routine doesn't use the value of the ```fw_length``` field (any longer?) to determine the end position of the flash erase. The real filesize is used instead. Without erasing the whole to-be firmware mtd partition, the sanity checks of the rootfs splitter probably preventing the creation of the jffs2 rootfs_data partition because of existing data.
 
 ## MD5 Salt
 The ```md5salt_boot``` has been changed in contrast to [mktplink2.c] \(or is wrong in [mktplink2.c]\). The actual value is
@@ -58,7 +64,7 @@ char md5salt_boot[MD5SUM_LEN] = {
 ```
 
 ### RSA Signature
-V3 images are signed, but the content of the first header **is not** covered by the signature. That means, crossflasher can alter the ```hw_id```, ```hw_ver``` and ```add_hw_ver``` fields, recalculate the ```md5sum1``` and use the firmware to crossflash a device. The mentioned fields of the second header are not validated by the the firmware update routine.
+The v3 images are signed, but the content of the first header **is not** covered by the signature. That means, crossflasher can alter the ```hw_id```, ```hw_ver``` and ```add_hw_ver``` fields, recalculate the ```md5sum1``` and use the firmware to crossflash a device. The mentioned fields of the second header are not validated by the the firmware update routine.
 
 The file ```lib/libcmm.so``` contains the base64 encoded public key of the pair. The format of the public key is "MS PUBLICKEYBLOB":
 
@@ -66,9 +72,11 @@ The file ```lib/libcmm.so``` contains the base64 encoded public key of the pair.
 BgIAAACkAABSU0ExAAQAAAEAAQD54+t3X+bMvuKUfm03w6prR+S+BRjefof9XuPFVew1mftBLi4IPmBc8fb5XJXSusmDXHa/SmSaH4dvNWE5xUuvzc9p2sWxczWEvGqAi4rNk82WtKn4JUgJoalOBOwLavO2ilq4MIcBNi4bYJ6s0vU243zlgFW7p29IsA64d3LY6Q==
 ```
 
-The 128 bit RSA signature is stored at position ```0xD0``` of the header(s). The signature is stored in reverse order (```0xA1 0xB2 0xC3``` => ```0xC3 0xB2 0xA1```). The signature value needs to be present in both headers even if the signature isn't valid for the payload after the second header.
+The signature is - **unconditionally/hard-coded** - read from the ```sig1``` field of the second header (```0x202D0```). That's why the second header is mandatory. Even if the signature is only read from the second header, both header of stock firmware images have the 128 bit RSA signature stored at their relative position ```0xD0```.
 
-In case two header exist within the firmware image, the value of the ```signature``` field of the second header is ```0x00``` prior to calculating the to be signed hash.
+The signature is stored in reverse order (```0xA1 0xB2 0xC3``` => ```0xC3 0xB2 0xA1```).
+
+Prior to calculating the to be signed hash, the value of the```sig1``` field of the second header is ```0x00```.
 
 The contents of the signature is composed of the static hex values (salt?) ```0x30 0x21 0x30 0x09 0x06 0x05 0x2b 0x0e 0x03 0x02 0x1a 0x05 0x00 0x04 0x14``` directly followed by sha1(md5(image excluding the first header) used as hex values.
 
@@ -120,34 +128,71 @@ The validation of the firmware images consists of the following steps in the out
 
 Due to lack of interest, it's not tracked down where the values of ```*hw*``` are stored on the device.
 
+# What has been achieved so far
+Using a TD-W8980v1 with stock firmware [TD-W8980v1_0.6.0_1.3_up_boot(131012)_2013-10-12.bin]:
+
+- crossflash a TD-W8980v1 to [TD-W9980v1_0.6.0_1.7_up_boot(140819)_2014-08-19_14.15.39.bin] and back to [TD-W8980v1_0.6.0_1.3_up_boot(131012)_2013-10-12.bin] via stock firmware update routine
+
+Using a TD-W8980v1 with firmware [TD-W8980v1_0.6.0_1.3_up_boot(131012)_2013-10-12.bin] + ```lib/libcmm.so``` patched with my public key:
+
+- resign and install stock firmware via stock firmware update routine
+- sign, install and boot an OpenWrt image, bundled with the stock tp-link bootloader, via stock firmware update routine (patches applied; rootfs is ```0xFF``` padded to the size of the firmware mtd partition)
+
 # Missing parts
 - the purpose of the value starting at position ```0x94``` of the header(s) is unknown
 - the TP-Link private key is still required to create images which are accepted by the stock firmware update routine
- 
+
+There is no obvious way to get an OpenWrt image booted which doesn't bundle a bootloader, has ```boot_ofs``` and ```boot_len``` values of ```0x00```, the required second header at ```0x20200``` followed by kernel+rootfs. Changing the ```kernel_ofs``` value to ```0x00 0x02 0x04 0x00``` for both headers didn't worked as expected. I guess the ```kernel_ofs``` should be read by the bootloader to identify the kernel start address within the flash. Either the bootloader has a hard-coded kernel start address or my value is wrong.
+
+## OpenWrt
+- sysupgrade doesn't like the new header version
+
 # References
 The following files were used for analysing/verifying the file format:
 
-* [TD-W8970v1_0.6.0_2.1_up(130415).bin](http://www.tp-link.de/resources/software/TD-W8970_V1_130415.zip)
-* [TD-W8970v1_0.6.0_2.8_up_boot(130828)_2013-08-28_10.41.41.bin](http://www.tp-link.de/resources/software/TD-W8970_V1_130828.zip)
-* [TD-W8970v1_0.6.0_2.12_up_boot(140613)_2014-06-13_09.17.23.bin](http://www.tp-link.de/resources/software/TD-W8970_V1_140613.zip)
-* [TD-W8970B(DE)v1_0.6.0_2.9_up_boot(140722)_2014-07-22_11.04.53.bin](http://www.tp-link.de/resources/software/TD-W8970B\(DE_1.0_140722.zip)
-* [TD-W8970B(DE)v1_0.6.0_2.10_up_boot(141008)_2014-10-08_15.49.52.bin](http://www.tp-link.de/resources/software/TD-W8970B_V1_141008_DE.zip)
-* [TD-W8970B(DE)v1_0.6.0_2.11_up_boot(150526)_2015-05-26_15.16.02.bin](http://www.tp-link.de/resources/software/TD-W8970B\(DE_V1_150526.zip)
-* [TD-W8980v1_0.6.0_1.3_up_boot(131012)_2013-10-12.bin](http://www.tp-link.de/resources/software/TD-W8980_V1_140619.zip)
-* [TD-W8980v1_0.6.0_1.7_up_boot(140619)_2014-06-19_14.30.19.bin](http://www.tp-link.de/resources/software/TD-W8980_V1_140619.zip)
-* [TD-W8980v1_0.6.0_1.7_up_boot(140919)_2014-09-19_15.09.20.bin](http://www.tp-link.de/resources/software/TD-W8980_V1_140919.zip)
-* [TD-W8980v1_0.6.0_1.8_up_boot(150514)_2015-05-14_11.16.43.bin](http://www.tp-link.de/resources/software/TD-W8980_V1_150514.zip)
-* [TD-W8980B(DE)v1_0.6.0_2.5_up_boot(131108)_2013-11-08_10.26.11.bin](http://www.tp-link.de/resources/software/TD-W8980B_V1_131212_DE.zip)
-* [TD-W8980B(DE)v1_0.6.0_2.5_up_boot(140423)_2014-04-23_14.21.47.bin](http://www.tp-link.de/resources/software/TD-W8980B_V1_140423_DE.zip)
-* [TD-W9980v1_0.6.0_1.7_up_boot(140819)_2014-08-19_14.15.39.bin](http://www.tp-link.de/resources/software/TD-W9980_V1_140819.rar)
-* [TD-W9980v1_0.6.0_1.8_up_boot(140925)_2014-09-25_09.12.45.bin](http://www.tp-link.de/resources/software/TD-W9980_V1_140925.zip)
-* [TD-W9980v1_0.6.0_1.10_up_boot(141215)_2014-12-15_11.50.34.bin](http://www.tp-link.de/resources/software/TD-W9980_V1_141215.zip)
-* [TD-W9980v1_0.6.0_1.12_up_boot(150507)_2015-05-07_11.12.40.bin](http://www.tp-link.de/resources/software/TD-W9980_V1_150507.zip)
-* [TD-W9980B(DE)v1_0.6.0_2.8_up_boot(140924)_2014-09-24_10.03.20.bin](http://www.tp-link.de/resources/software/TD-W9980B_V1_140924_DE.zip)
-* [TD-W9980B(DE)v1_0.6.0_2.9_up_boot(141114)_2014-11-14_14.14.32.bin](http://www.tp-link.de/resources/software/TD-W9980B_V1_141114_DE.zip)
-* [TD-W9980B(DE)v1_0.6.0_2.10_up_boot(150519)_2015-05-19_16.01.15.bin](http://www.tp-link.de/resources/software/TD-W9980B\(DE_V1_150519.zip)
-* [Archer_D7v1_0.9.1_0.9_up_boot(141014)_2014-10-14_14.49.54.bin](http://www.tp-link.com/resources/software/Archer_D7_V1_141014.zip)
-* [Archer_D7v1_0.9.1_0.11_up_boot(150324)_2015-03-24_14.05.43.bin](http://www.tp-link.de/resources/software/Archer_D7_V1_150324.zip)
-* [Archer_D7v1_0.9.1_0.12_up_boot(150514)_2015-05-14_09.22.09.bin](http://www.tp-link.de/resources/software/Archer_D7_V1_150514.zip)
+* [TD-W8970v1_0.6.0_2.1_up(130415).bin]
+* [TD-W8970v1_0.6.0_2.8_up_boot(130828)_2013-08-28_10.41.41.bin]
+* [TD-W8970v1_0.6.0_2.12_up_boot(140613)_2014-06-13_09.17.23.bin]
+* [TD-W8970B(DE)v1_0.6.0_2.9_up_boot(140722)_2014-07-22_11.04.53.bin]
+* [TD-W8970B(DE)v1_0.6.0_2.10_up_boot(141008)_2014-10-08_15.49.52.bin]
+* [TD-W8970B(DE)v1_0.6.0_2.11_up_boot(150526)_2015-05-26_15.16.02.bin]
+* [TD-W8980v1_0.6.0_1.3_up_boot(131012)_2013-10-12.bin]
+* [TD-W8980v1_0.6.0_1.7_up_boot(140619)_2014-06-19_14.30.19.bin]
+* [TD-W8980v1_0.6.0_1.7_up_boot(140919)_2014-09-19_15.09.20.bin]
+* [TD-W8980v1_0.6.0_1.8_up_boot(150514)_2015-05-14_11.16.43.bin]
+* [TD-W8980B(DE)v1_0.6.0_2.5_up_boot(131108)_2013-11-08_10.26.11.bin]
+* [TD-W8980B(DE)v1_0.6.0_2.5_up_boot(140423)_2014-04-23_14.21.47.bin]
+* [TD-W9980v1_0.6.0_1.7_up_boot(140819)_2014-08-19_14.15.39.bin]
+* [TD-W9980v1_0.6.0_1.8_up_boot(140925)_2014-09-25_09.12.45.bin]
+* [TD-W9980v1_0.6.0_1.10_up_boot(141215)_2014-12-15_11.50.34.bin]
+* [TD-W9980v1_0.6.0_1.12_up_boot(150507)_2015-05-07_11.12.40.bin]
+* [TD-W9980B(DE)v1_0.6.0_2.8_up_boot(140924)_2014-09-24_10.03.20.bin]
+* [TD-W9980B(DE)v1_0.6.0_2.9_up_boot(141114)_2014-11-14_14.14.32.bin]
+* [TD-W9980B(DE)v1_0.6.0_2.10_up_boot(150519)_2015-05-19_16.01.15.bin]
+* [Archer_D7v1_0.9.1_0.9_up_boot(141014)_2014-10-14_14.49.54.bin]
+* [Archer_D7v1_0.9.1_0.11_up_boot(150324)_2015-03-24_14.05.43.bin]
+* [Archer_D7v1_0.9.1_0.12_up_boot(150514)_2015-05-14_09.22.09.bin]
 
 [mktplink2.c]: https://dev.openwrt.org/browser/trunk/tools/firmware-utils/src/mktplinkfw2.c
+[TD-W8970v1_0.6.0_2.1_up(130415).bin]: http://www.tp-link.com/resources/software/TD-W8970_V1_130415.zip
+[TD-W8970v1_0.6.0_2.8_up_boot(130828)_2013-08-28_10.41.41.bin]: http://www.tp-link.com/resources/software/TD-W8970_V1_130828.zip
+[TD-W8970v1_0.6.0_2.12_up_boot(140613)_2014-06-13_09.17.23.bin]: http://www.tp-link.com/resources/software/TD-W8970_V1_140613.zip
+[TD-W8970B(DE)v1_0.6.0_2.9_up_boot(140722)_2014-07-22_11.04.53.bin]: http://www.tp-link.de/resources/software/TD-W8970B\(DE_1.0_140722.zip
+[TD-W8970B(DE)v1_0.6.0_2.10_up_boot(141008)_2014-10-08_15.49.52.bin]: http://www.tp-link.com/resources/software/TD-W8970B_V1_141008_DE.zip
+[TD-W8970B(DE)v1_0.6.0_2.11_up_boot(150526)_2015-05-26_15.16.02.bin]: http://www.tp-link.de/resources/software/TD-W8970B\(DE_V1_150526.zip
+[TD-W8980v1_0.6.0_1.3_up_boot(131012)_2013-10-12.bin]: http://www.tp-link.com/resources/software/TD-W8980_V1_140619.zip
+[TD-W8980v1_0.6.0_1.7_up_boot(140619)_2014-06-19_14.30.19.bin]: http://www.tp-link.com/resources/software/TD-W8980_V1_140619.zip
+[TD-W8980v1_0.6.0_1.7_up_boot(140919)_2014-09-19_15.09.20.bin]: http://www.tp-link.com/resources/software/TD-W8980_V1_140919.zip
+[TD-W8980v1_0.6.0_1.8_up_boot(150514)_2015-05-14_11.16.43.bin]: http://www.tp-link.com/resources/software/TD-W8980_V1_150514.zip
+[TD-W8980B(DE)v1_0.6.0_2.5_up_boot(131108)_2013-11-08_10.26.11.bin]: http://www.tp-link.com/resources/software/TD-W8980B_V1_131212_DE.zip
+[TD-W8980B(DE)v1_0.6.0_2.5_up_boot(140423)_2014-04-23_14.21.47.bin]: http://www.tp-link.com/resources/software/TD-W8980B_V1_140423_DE.zip
+[TD-W9980v1_0.6.0_1.7_up_boot(140819)_2014-08-19_14.15.39.bin]: http://www.tp-link.com/resources/software/TD-W9980_V1_140819.rar
+[TD-W9980v1_0.6.0_1.8_up_boot(140925)_2014-09-25_09.12.45.bin]: http://www.tp-link.com/resources/software/TD-W9980_V1_140925.zip
+[TD-W9980v1_0.6.0_1.10_up_boot(141215)_2014-12-15_11.50.34.bin]: http://www.tp-link.com/resources/software/TD-W9980_V1_141215.zip
+[TD-W9980v1_0.6.0_1.12_up_boot(150507)_2015-05-07_11.12.40.bin]: http://www.tp-link.com/resources/software/TD-W9980_V1_150507.zip
+[TD-W9980B(DE)v1_0.6.0_2.8_up_boot(140924)_2014-09-24_10.03.20.bin]: http://www.tp-link.com/resources/software/TD-W9980B_V1_140924_DE.zip
+[TD-W9980B(DE)v1_0.6.0_2.9_up_boot(141114)_2014-11-14_14.14.32.bin]: http://www.tp-link.com/resources/software/TD-W9980B_V1_141114_DE.zip
+[TD-W9980B(DE)v1_0.6.0_2.10_up_boot(150519)_2015-05-19_16.01.15.bin]: http://www.tp-link.de/resources/software/TD-W9980B\(DE_V1_150519.zip
+[Archer_D7v1_0.9.1_0.9_up_boot(141014)_2014-10-14_14.49.54.bin]: http://www.tp-link.com/resources/software/Archer_D7_V1_141014.zip
+[Archer_D7v1_0.9.1_0.11_up_boot(150324)_2015-03-24_14.05.43.bin]: http://www.tp-link.com/resources/software/Archer_D7_V1_150324.zip
+[Archer_D7v1_0.9.1_0.12_up_boot(150514)_2015-05-14_09.22.09.bin]: http://www.tp-link.com/resources/software/Archer_D7_V1_150514.zip
